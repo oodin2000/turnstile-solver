@@ -1,0 +1,7 @@
+{
+  "pool_size": 2,
+  "headless": true,
+  "solve_timeout": 45,
+  "host": "127.0.0.1",
+  "port": 8000
+}
