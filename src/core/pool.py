@@ -96,6 +96,7 @@ class BrowserWorker:
             humanize=True,
             block_webrtc=True,
             i_know_what_im_doing=True,
+            addons=[],                 # <-- PERBAIKAN: nonaktifkan addon
         ).start()
         logger.info(f"[W{self.worker_id}] Ready.")
         self._task = asyncio.create_task(self._run_loop())
