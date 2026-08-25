@@ -97,7 +97,7 @@ class BrowserWorker:
             block_webrtc=True,
             i_know_what_im_doing=True,
             addons=[],
-            args=["--no-sandbox"],  # <--- tambahan untuk container
+            args=["--no-sandbox"],
         ).start()
         logger.info(f"[W{self.worker_id}] Ready.")
         self._task = asyncio.create_task(self._run_loop())
@@ -132,7 +132,9 @@ class BrowserWorker:
             total_timeout = job.timeout + 10
 
             # Setup page dengan timeout
+            logger.info(f"[W{self.worker_id}] Setting up page for {job.url}...")
             page = await asyncio.wait_for(self._setup_page(job), timeout=total_timeout)
+            logger.info(f"[W{self.worker_id}] Page setup complete. Waiting for token...")
 
             # Tunggu token dengan timeout (job.timeout + 5 detik)
             token = await asyncio.wait_for(
@@ -211,7 +213,25 @@ class BrowserWorker:
 
         await page.route("**/*", handle_route)
 
+        logger.info(f"[W{self.worker_id}] Navigating to {url}...")
         await page.goto(url, wait_until="load")
+
+        # DEBUG: Periksa apakah elemen Turnstile muncul
+        content = await page.content()
+        if 'cf-turnstile' not in content:
+            logger.warning(f"[W{self.worker_id}] ⚠️ Turnstile widget TIDAK ditemukan di halaman!")
+            # Coba cari elemen dengan selector alternatif
+            try:
+                el = await page.query_selector('.cf-turnstile')
+                if el:
+                    logger.info(f"[W{self.worker_id}] Elemen cf-turnstile ditemukan via query_selector")
+                else:
+                    logger.warning(f"[W{self.worker_id}] Elemen cf-turnstile tidak ditemukan sama sekali.")
+            except Exception as e:
+                logger.warning(f"[W{self.worker_id}] Error saat mengecek elemen: {e}")
+        else:
+            logger.info(f"[W{self.worker_id}] ✓ Turnstile widget ditemukan di halaman.")
+
         return page
 
     async def _wait_for_token(self, page, timeout: int) -> Optional[str]:
@@ -219,6 +239,7 @@ class BrowserWorker:
         Poll via wait_for_function with a short interval.
         """
         try:
+            logger.info(f"[W{self.worker_id}] Waiting for token (timeout: {timeout}s)...")
             await page.wait_for_function(
                 """() => {
                     const el = document.querySelector('[name=cf-turnstile-response]');
@@ -229,9 +250,16 @@ class BrowserWorker:
             )
             el = await page.query_selector("[name=cf-turnstile-response]")
             if el:
-                return await el.get_attribute("value")
-        except Exception:
-            pass
+                token = await el.get_attribute("value")
+                if token:
+                    logger.info(f"[W{self.worker_id}] Token received: {token[:20]}...")
+                    return token
+                else:
+                    logger.warning(f"[W{self.worker_id}] Token element found but value is empty.")
+            else:
+                logger.warning(f"[W{self.worker_id}] Token element not found after wait_for_function.")
+        except Exception as e:
+            logger.warning(f"[W{self.worker_id}] Error while waiting for token: {e}")
         return None
 
 
