@@ -19,7 +19,7 @@ aptPkgs = [
     "libfreetype6",
     "fontconfig",
     "libgl1",
-    "libasound2",
+    "libasound2t64",
     "libxkbcommon0",
     "libgl1-mesa-dri",
     "libnss3",
@@ -28,6 +28,6 @@ aptPkgs = [
     "libevent-2.1-7",
     "libexpat1",
     "zlib1g",
-    "gcc",
-    "libstdc++6"
+    "libgbm1",
+    "libxshmfence1"
 ]
