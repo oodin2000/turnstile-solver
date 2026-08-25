@@ -1,3 +1,3 @@
 #!/bin/bash
-export PYTHONPATH=$PYTHONPATH:/app/src
-uvicorn server:app --host 0.0.0.0 --port $PORT
+export PYTHONPATH=$PYTHONPATH:/app
+python -m uvicorn src.server:app --host 0.0.0.0 --port $PORT
