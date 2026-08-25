@@ -20,8 +20,8 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 
-from core.solver import TurnstileSolver, TurnstileResult
-from core.logger import setup_logger
+from src.core.solver import TurnstileSolver, TurnstileResult
+from src.core.logger import setup_logger
 
 logger = setup_logger("API")
 
