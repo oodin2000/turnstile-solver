@@ -96,7 +96,8 @@ class BrowserWorker:
             humanize=True,
             block_webrtc=True,
             i_know_what_im_doing=True,
-            addons=[],                 # <-- PERBAIKAN: nonaktifkan addon
+            addons=[],
+            args=["--no-sandbox"],  # <--- tambahan untuk container
         ).start()
         logger.info(f"[W{self.worker_id}] Ready.")
         self._task = asyncio.create_task(self._run_loop())
@@ -127,8 +128,18 @@ class BrowserWorker:
         start = time.time()
         page = None
         try:
-            page = await self._setup_page(job)
-            token = await self._wait_for_token(page, job.timeout)
+            # Total timeout = job.timeout + buffer 10 detik
+            total_timeout = job.timeout + 10
+
+            # Setup page dengan timeout
+            page = await asyncio.wait_for(self._setup_page(job), timeout=total_timeout)
+
+            # Tunggu token dengan timeout (job.timeout + 5 detik)
+            token = await asyncio.wait_for(
+                self._wait_for_token(page, job.timeout),
+                timeout=job.timeout + 5
+            )
+
             elapsed = round(time.time() - start, 3)
 
             if token:
@@ -142,12 +153,24 @@ class BrowserWorker:
                     status="failed",
                     error="Timed out waiting for Turnstile token",
                 )
+
+        except asyncio.TimeoutError:
+            elapsed = round(time.time() - start, 3)
+            logger.error(f"[W{self.worker_id}] Task timeout after {elapsed}s")
+            return TurnstileResult(
+                token=None,
+                elapsed=elapsed,
+                status="failed",
+                error="Task execution timeout",
+            )
+
         except Exception as exc:
             elapsed = round(time.time() - start, 3)
             logger.error(f"[W{self.worker_id}] Error: {exc}")
             return TurnstileResult(
                 token=None, elapsed=elapsed, status="failed", error=str(exc)
             )
+
         finally:
             if page:
                 await page.close()
