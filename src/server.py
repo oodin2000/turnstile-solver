@@ -22,7 +22,9 @@ from pydantic import BaseModel, Field
 
 from src.core.solver import TurnstileSolver, TurnstileResult
 from src.core.logger import setup_logger
+from fastapi import FastAPI
 
+app = FastAPI()
 logger = setup_logger("API")
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
@@ -188,6 +190,9 @@ async def delete_task(task_id: str):
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found.")
     del tasks[task_id]
 
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     os.system('cls' if os.name == 'nt' else 'clear')
