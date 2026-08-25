@@ -32,7 +32,7 @@ try:
 except FileNotFoundError:
     config = {}
 
-POOL_SIZE = config.get("pool_size", 2)
+POOL_SIZE = config.get("pool_size", 1)
 HEADLESS = config.get("headless", True)
 SOLVE_TIMEOUT = config.get("solve_timeout", 45)
 HOST = config.get("host", "127.0.0.1")
