@@ -1,5 +1,5 @@
 {
-  "pool_size": 3,
+  "pool_size": 4,
   "headless": true,
   "solve_timeout": 120,
   "host": "0.0.0.0",
