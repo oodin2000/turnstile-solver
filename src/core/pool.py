@@ -132,9 +132,7 @@ class BrowserWorker:
             total_timeout = job.timeout + 10
 
             # Setup page dengan timeout
-            logger.info(f"[W{self.worker_id}] Setting up page for {job.url}...")
             page = await asyncio.wait_for(self._setup_page(job), timeout=total_timeout)
-            logger.info(f"[W{self.worker_id}] Page setup complete. Waiting for token...")
 
             # Tunggu token dengan timeout (job.timeout + 5 detik)
             token = await asyncio.wait_for(
@@ -213,14 +211,13 @@ class BrowserWorker:
 
         await page.route("**/*", handle_route)
 
-        logger.info(f"[W{self.worker_id}] Navigating to {url}...")
-        await page.goto(url, wait_until="load")
+        # OPTIMASI: gunakan domcontentloaded untuk kecepatan
+        await page.goto(url, wait_until="domcontentloaded")
 
-        # DEBUG: Periksa apakah elemen Turnstile muncul
+        # DEBUG (tetap dipertahankan untuk troubleshooting)
         content = await page.content()
         if 'cf-turnstile' not in content:
             logger.warning(f"[W{self.worker_id}] ⚠️ Turnstile widget TIDAK ditemukan di halaman!")
-            # Coba cari elemen dengan selector alternatif
             try:
                 el = await page.query_selector('.cf-turnstile')
                 if el:
@@ -239,7 +236,6 @@ class BrowserWorker:
         Poll via wait_for_function with a short interval.
         """
         try:
-            logger.info(f"[W{self.worker_id}] Waiting for token (timeout: {timeout}s)...")
             await page.wait_for_function(
                 """() => {
                     const el = document.querySelector('[name=cf-turnstile-response]');
