@@ -1,13 +1,5 @@
 """
 pool.py — Browser pool with async queue.
-
-Optimizations that are safe and proven:
-  - Persistent browser instances
-  - Parallel browser startup
-  - event-driven token detection (wait_for_function with polling)
-  - Route filtering (abort non-Turnstile requests)
-  - Minimal Firefox prefs (only safe, non-breaking ones)
-  - OS pinned to windows (skip fingerprint random selection)
 """
 
 import asyncio
@@ -78,44 +70,75 @@ class TurnstileResult:
 
 
 class BrowserWorker:
-    """One persistent Camoufox browser. Pulls jobs from the shared queue."""
-
     def __init__(self, worker_id: int, queue: asyncio.Queue, headless: bool):
         self.worker_id = worker_id
         self.queue = queue
         self.headless = headless
         self._browser = None
         self._task: Optional[asyncio.Task] = None
+        self._is_closing = False
+        self._browser_lock = asyncio.Lock()
 
     async def start(self):
         logger.info(f"[W{self.worker_id}] Launching browser...")
-        self._browser = await AsyncCamoufox(
-            headless=self.headless,
-            firefox_user_prefs=FIREFOX_PREFS,
-            os="windows",
-            humanize=True,
-            block_webrtc=True,
-            i_know_what_im_doing=True,
-            addons=[],
-            args=["--no-sandbox"],
-        ).start()
+        await self._ensure_browser()
         logger.info(f"[W{self.worker_id}] Ready.")
         self._task = asyncio.create_task(self._run_loop())
 
+    async def _ensure_browser(self):
+        """Pastikan browser berjalan, restart jika crash."""
+        async with self._browser_lock:
+            if self._browser is not None:
+                try:
+                    # Cek apakah browser masih hidup
+                    await self._browser.contexts
+                    return
+                except Exception:
+                    logger.warning(f"[W{self.worker_id}] Browser rusak, merestart...")
+                    await self._close_browser()
+            
+            try:
+                self._browser = await AsyncCamoufox(
+                    headless=self.headless,
+                    firefox_user_prefs=FIREFOX_PREFS,
+                    os="windows",
+                    humanize=True,
+                    block_webrtc=True,
+                    i_know_what_im_doing=True,
+                    addons=[],
+                    args=["--no-sandbox"],
+                ).start()
+                logger.info(f"[W{self.worker_id}] Browser restarted.")
+            except Exception as e:
+                logger.error(f"[W{self.worker_id}] Gagal memulai browser: {e}")
+                raise
+
+    async def _close_browser(self):
+        if self._browser:
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+
     async def close(self):
+        self._is_closing = True
         if self._task:
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        if self._browser:
-            await self._browser.close()
+        await self._close_browser()
         logger.info(f"[W{self.worker_id}] Closed.")
 
     async def _run_loop(self):
-        while True:
-            job: SolveJob = await self.queue.get()
+        while not self._is_closing:
+            try:
+                job: SolveJob = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            
             try:
                 result = await self._execute(job)
                 job.future.set_result(result)
@@ -128,13 +151,12 @@ class BrowserWorker:
         start = time.time()
         page = None
         try:
-            # Total timeout = job.timeout + buffer 10 detik
+            # Pastikan browser hidup
+            await self._ensure_browser()
+
             total_timeout = job.timeout + 10
-
-            # Setup page dengan timeout
             page = await asyncio.wait_for(self._setup_page(job), timeout=total_timeout)
-
-            # Tunggu token dengan timeout (job.timeout + 5 detik)
+            
             token = await asyncio.wait_for(
                 self._wait_for_token(page, job.timeout),
                 timeout=job.timeout + 5
@@ -154,7 +176,7 @@ class BrowserWorker:
                     error="Timed out waiting for Turnstile token",
                 )
 
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, asyncio.CancelledError):
             elapsed = round(time.time() - start, 3)
             logger.error(f"[W{self.worker_id}] Task timeout after {elapsed}s")
             return TurnstileResult(
@@ -166,14 +188,24 @@ class BrowserWorker:
 
         except Exception as exc:
             elapsed = round(time.time() - start, 3)
-            logger.error(f"[W{self.worker_id}] Error: {exc}")
+            error_msg = str(exc)
+            logger.error(f"[W{self.worker_id}] Error: {error_msg}")
+            
+            # Jika browser crash, restart
+            if "closed" in error_msg.lower() or "target page" in error_msg.lower():
+                logger.warning(f"[W{self.worker_id}] Browser crash detected, restarting...")
+                await self._close_browser()
+            
             return TurnstileResult(
-                token=None, elapsed=elapsed, status="failed", error=str(exc)
+                token=None, elapsed=elapsed, status="failed", error=error_msg
             )
 
         finally:
             if page:
-                await page.close()
+                try:
+                    await page.close()
+                except Exception:
+                    pass
 
     async def _setup_page(self, job: SolveJob):
         url = job.url if job.url.endswith("/") else job.url + "/"
@@ -193,6 +225,9 @@ class BrowserWorker:
             f'<div class="cf-turnstile" {attrs}></div>{extra}',
         )
 
+        # Browser harus hidup, tapi kita cek ulang
+        await self._ensure_browser()
+        
         page = await self._browser.new_page()
 
         async def handle_route(route):
@@ -210,31 +245,10 @@ class BrowserWorker:
                 await route.abort()
 
         await page.route("**/*", handle_route)
-
-        # OPTIMASI: gunakan domcontentloaded untuk kecepatan
         await page.goto(url, wait_until="domcontentloaded")
-
-        # DEBUG (tetap dipertahankan untuk troubleshooting)
-        content = await page.content()
-        if 'cf-turnstile' not in content:
-            logger.warning(f"[W{self.worker_id}] ⚠️ Turnstile widget TIDAK ditemukan di halaman!")
-            try:
-                el = await page.query_selector('.cf-turnstile')
-                if el:
-                    logger.info(f"[W{self.worker_id}] Elemen cf-turnstile ditemukan via query_selector")
-                else:
-                    logger.warning(f"[W{self.worker_id}] Elemen cf-turnstile tidak ditemukan sama sekali.")
-            except Exception as e:
-                logger.warning(f"[W{self.worker_id}] Error saat mengecek elemen: {e}")
-        else:
-            logger.info(f"[W{self.worker_id}] ✓ Turnstile widget ditemukan di halaman.")
-
         return page
 
     async def _wait_for_token(self, page, timeout: int) -> Optional[str]:
-        """
-        Poll via wait_for_function with a short interval.
-        """
         try:
             await page.wait_for_function(
                 """() => {
@@ -250,21 +264,12 @@ class BrowserWorker:
                 if token:
                     logger.info(f"[W{self.worker_id}] Token received: {token[:20]}...")
                     return token
-                else:
-                    logger.warning(f"[W{self.worker_id}] Token element found but value is empty.")
-            else:
-                logger.warning(f"[W{self.worker_id}] Token element not found after wait_for_function.")
         except Exception as e:
-            logger.warning(f"[W{self.worker_id}] Error while waiting for token: {e}")
+            logger.warning(f"[W{self.worker_id}] Error waiting for token: {e}")
         return None
 
 
 class BrowserPool:
-    """
-    Pool of N BrowserWorkers sharing one asyncio.Queue.
-    All workers start in parallel — startup cost = one browser launch, not N.
-    """
-
     def __init__(self, pool_size: int = 3, headless: bool = True):
         self.pool_size = pool_size
         self.headless = headless
@@ -275,7 +280,7 @@ class BrowserPool:
     async def start(self):
         if self._started:
             return
-        logger.info(f"Starting {self.pool_size} browser workers in parallel...")
+        logger.info(f"Starting {self.pool_size} browser workers...")
         workers = [
             BrowserWorker(worker_id=i + 1, queue=self._queue, headless=self.headless)
             for i in range(self.pool_size)
