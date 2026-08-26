@@ -1,48 +1,43 @@
-"""
-solver.py — Thin async wrapper around BrowserPool.
-
-Keeps the TurnstileSolver class name so existing imports don't break,
-but delegates all browser management to BrowserPool.
-"""
-
+# src/core/solver.py
+import asyncio
+import traceback
 from typing import Optional
 
 from .pool import BrowserPool, TurnstileResult
+from .logger import setup_logger
+
+logger = setup_logger("Solver")
 
 _pool: Optional[BrowserPool] = None
 
 
 class TurnstileSolver:
-    """
-    Async Turnstile solver backed by a shared BrowserPool.
+    def __init__(self, headless: bool = True, pool_size: int = 2):
+        self.headless = headless
+        self.pool_size = pool_size
 
-    Instantiate as many of these as you like — they all share the
-    same underlying pool of browsers.
-    """
-
-    def __init__(self, headless: bool = True, pool_size: int = 3):
-        global _pool
-        if _pool is None:
-            _pool = BrowserPool(pool_size=pool_size, headless=headless)
-
-    @staticmethod
-    async def start_pool(headless: bool = True, pool_size: int = 3):
-        """Call once at application startup to launch all browsers."""
-        global _pool
-        if _pool is None:
-            _pool = BrowserPool(pool_size=pool_size, headless=headless)
-        await _pool.start()
-
-    @staticmethod
-    async def close_pool():
-        """Call once at application shutdown to close all browsers."""
+    @classmethod
+    async def start_pool(cls, headless: bool = True, pool_size: int = 2):
         global _pool
         if _pool is not None:
-            await _pool.close()
-            _pool = None
+            logger.warning("Pool already started, skipping.")
+            return
+        _pool = BrowserPool(pool_size=pool_size, headless=headless)
+        await _pool.start()
+        logger.info(f"Pool started with {pool_size} workers (headless={headless})")
 
+    @classmethod
+    async def close_pool(cls):
+        global _pool
+        if _pool is None:
+            return
+        await _pool.close()
+        _pool = None
+        logger.info("Pool closed.")
+
+    @classmethod
     async def solve(
-        self,
+        cls,
         url: str,
         sitekey: str,
         action: Optional[str] = None,
@@ -51,18 +46,31 @@ class TurnstileSolver:
         timeout: int = 45,
     ) -> TurnstileResult:
         if _pool is None:
-            raise RuntimeError(
-                "Pool not started. Call await TurnstileSolver.start_pool() first."
+            raise RuntimeError("Pool not started. Call start_pool() first.")
+        
+        logger.info(f"Solving for {url} with sitekey {sitekey[:8]}...")
+        try:
+            result = await _pool.solve(
+                url=url,
+                sitekey=sitekey,
+                action=action,
+                cdata=cdata,
+                page_data=page_data,
+                timeout=timeout,
             )
-        return await _pool.solve(
-            url=url,
-            sitekey=sitekey,
-            action=action,
-            cdata=cdata,
-            page_data=page_data,
-            timeout=timeout,
-        )
+            return result
+        except Exception as e:
+            # Tangkap semua exception dan ubah menjadi result gagal
+            logger.error(f"Error during solve: {e}\n{traceback.format_exc()}")
+            return TurnstileResult(
+                token=None,
+                elapsed=0.0,
+                status="failed",
+                error=str(e),
+            )
 
     @property
     def queue_size(self) -> int:
-        return _pool.queue_size if _pool else 0
+        if _pool is None:
+            return 0
+        return _pool.queue_size
